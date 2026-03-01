@@ -24,19 +24,32 @@ export default function Guild() {
       const { data: guildData } = await supabase.from('guilds').select('*').order('total_elo', { ascending: false });
       if (guildData) setGuilds(guildData);
 
-      // 2. Fetch current user
+      // 2. Fetch current user & AUTO-CREATE profile if missing!
       if (user) {
-        const { data: profileData } = await supabase.from('profiles').select('*').eq('id', user.id).single();
+        let { data: profileData } = await supabase.from('profiles').select('*').eq('id', user.id).single();
+        
+        // 🚀 THE FIX: If the user doesn't have a database row yet, make one!
+        if (!profileData) {
+          const { data: newProfile } = await supabase.from('profiles').insert([{
+            id: user.id,
+            username: user.email.split('@')[0].toUpperCase(),
+            guild_name: 'UNASSIGNED',
+            elo: 1000,
+            wins: 0,
+            matches: 0
+          }]).select().single();
+          
+          profileData = newProfile;
+        }
+
         if (profileData) {
           setMyProfile(profileData);
           
           // 3. If they are IN a guild, fetch the rich dashboard data!
           if (profileData.guild_name && profileData.guild_name !== 'UNASSIGNED') {
-            // Get the guild's stats
             const { data: gDetails } = await supabase.from('guilds').eq('name', profileData.guild_name).single();
             if (gDetails) setMyGuildDetails(gDetails);
             
-            // Get the active roster (all users in this guild)
             const { data: members } = await supabase.from('profiles')
               .select('username, elo, wins')
               .eq('guild_name', profileData.guild_name)
@@ -59,24 +72,34 @@ export default function Guild() {
   // --- ACTIONS ---
   const handleJoinGuild = async (guildName) => {
     if (!user) return alert("Please login to join an Academic House!");
+    
+    // Update the player's profile
     const { error } = await supabase.from('profiles').update({ guild_name: guildName }).eq('id', user.id);
     if (!error) {
+      // Add their ELO and +1 member to the Guild
       const targetGuild = guilds.find(g => g.name === guildName);
       if (targetGuild) {
-         await supabase.from('guilds').update({ member_count: targetGuild.member_count + 1, total_elo: targetGuild.total_elo + (myProfile?.elo || 1000) }).eq('name', guildName);
+         await supabase.from('guilds').update({ 
+           member_count: targetGuild.member_count + 1, 
+           total_elo: targetGuild.total_elo + (myProfile?.elo || 1000) 
+         }).eq('name', guildName);
       }
-      fetchData();
+      fetchData(); // Reload page with new data
     }
   };
 
   const handleLeaveGuild = async () => {
     if (!user || !myProfile) return;
     const oldGuildName = myProfile.guild_name;
+    
     const { error } = await supabase.from('profiles').update({ guild_name: 'UNASSIGNED' }).eq('id', user.id);
     if (!error) {
       const targetGuild = guilds.find(g => g.name === oldGuildName);
       if (targetGuild && targetGuild.member_count > 0) {
-         await supabase.from('guilds').update({ member_count: targetGuild.member_count - 1, total_elo: targetGuild.total_elo - (myProfile.elo || 1000) }).eq('name', oldGuildName);
+         await supabase.from('guilds').update({ 
+           member_count: targetGuild.member_count - 1, 
+           total_elo: targetGuild.total_elo - (myProfile.elo || 1000) 
+         }).eq('name', oldGuildName);
       }
       fetchData();
     }
@@ -88,6 +111,8 @@ export default function Guild() {
     if (!newGuildName.trim()) return;
 
     const formattedName = newGuildName.toUpperCase().replace(/\s+/g, '_');
+    
+    // 1. Create the Guild
     const { error: insertError } = await supabase.from('guilds').insert([{
       name: formattedName,
       description: newGuildDesc || 'A newly established academic house.',
@@ -96,8 +121,13 @@ export default function Guild() {
     }]);
 
     if (insertError) return alert("Error creating guild. That name might already exist!");
+    
+    // 2. Assign the creator to it
     await supabase.from('profiles').update({ guild_name: formattedName }).eq('id', user.id);
-    setNewGuildName(''); setNewGuildDesc(''); fetchData();
+    
+    setNewGuildName(''); 
+    setNewGuildDesc(''); 
+    fetchData();
   };
 
   if (loading) return <div style={{ color: 'var(--white)', padding: '100px', textAlign: 'center', fontFamily: '"Press Start 2P", monospace' }}>ACCESSING GUILD NETWORK...</div>;
@@ -108,18 +138,15 @@ export default function Guild() {
   // VIEW 1: USER IS IN A GUILD (RICH DASHBOARD)
   // ==========================================
   if (currentGuildName !== 'UNASSIGNED' && myGuildDetails) {
-    // Calculate dynamic Level and XP based on their total ELO
     const level = Math.floor(myGuildDetails.total_elo / 5000) + 1;
     const currentXp = myGuildDetails.total_elo % 5000;
     const xpPercentage = (currentXp / 5000) * 100;
-
-    // Mock subject strengths (until we build a DB table for this)
     const subjectStrengths = { "Physics": 1650, "Computer Science": 1400, "Mathematics": 1100 };
 
     return (
       <div className="max-w-6xl mx-auto p-8 pt-12 min-h-screen text-white">
         
-        {/* TOP BANNER (GuildHeader logic) */}
+        {/* TOP BANNER */}
         <div className="bg-gray-900 border-4 border-pink-500 p-6 shadow-[8px_8px_0px_#831843] mb-8 relative">
           <button onClick={handleLeaveGuild} className="absolute top-4 right-4 px-btn px-btn-r text-[10px]">LEAVE HOUSE</button>
           
@@ -137,7 +164,6 @@ export default function Guild() {
             </div>
           </div>
 
-          {/* Level & XP Bar */}
           <div className="flex items-center gap-4">
             <div className="font-pixel text-lg text-pink-400 bg-pink-500/20 px-4 py-2 border border-pink-500">
               LVL {level}
@@ -155,7 +181,7 @@ export default function Guild() {
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-          {/* LEFT COLUMN: Strengths (GuildSkillDashboard logic) */}
+          {/* LEFT COLUMN: Strengths */}
           <div className="bg-gray-900 border-2 border-blue-500 p-6 shadow-[4px_4px_0px_#1e3a8a]">
             <h2 className="font-pixel text-blue-400 text-sm mb-6 border-b-2 border-gray-700 pb-2">
               📊 DOMAIN STRENGTHS
@@ -182,7 +208,6 @@ export default function Guild() {
             </h2>
             <div className="flex flex-col gap-4 font-terminal text-2xl text-gray-300 h-[300px] overflow-y-auto pr-2">
               {myGuildMembers.map((member, index) => {
-                // Highest ELO is deemed the "Leader"
                 const role = index === 0 ? 'Leader' : index < 3 ? 'Strategist' : 'Member';
                 const isMe = member.username === myProfile.username;
                 
@@ -239,6 +264,7 @@ export default function Guild() {
                 <button onClick={() => handleJoinGuild(guild.name)} className="px-btn px-btn-b">PLEDGE ▶</button>
               </div>
             ))}
+            {guilds.length === 0 && <div style={{ color: 'var(--muted)' }}>No guilds have been established yet.</div>}
           </div>
         </div>
 
