@@ -1,225 +1,265 @@
-import { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { supabase } from '../lib/supabaseClient';
+import { useAuth } from '../context/AuthContext';
 import '../styles/guild.css';
-import '../styles/rank.css'; // Reusing the high-quality tables we made for the Ranks page
 
 export default function Guild() {
-  const [activeTab, setActiveTab] = useState('DASHBOARD');
+  const { user } = useAuth();
+  
+  // Database States
+  const [guilds, setGuilds] = useState([]);
+  const [myProfile, setMyProfile] = useState(null);
+  const [myGuildDetails, setMyGuildDetails] = useState(null);
+  const [myGuildMembers, setMyGuildMembers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  
+  // Form State
+  const [newGuildName, setNewGuildName] = useState('');
+  const [newGuildDesc, setNewGuildDesc] = useState('');
 
-  // MOCK ACADEMIC HOUSE DATA
-  const myHouse = {
-    name: "THE_LOGIC_GATES",
-    level: 42,
-    members: "128/150",
-    rank: "#4",
-    globalElo: "45,210",
-    warRecord: "142W - 12L",
-    strengths: [
-      { sub: "Computer Science", val: 85 },
-      { sub: "Physics", val: 60 },
-      { sub: "Mathematics", val: 40 }
-    ]
+  const fetchData = async () => {
+    setLoading(true);
+    try {
+      // 1. Fetch all available guilds
+      const { data: guildData } = await supabase.from('guilds').select('*').order('total_elo', { ascending: false });
+      if (guildData) setGuilds(guildData);
+
+      // 2. Fetch current user
+      if (user) {
+        const { data: profileData } = await supabase.from('profiles').select('*').eq('id', user.id).single();
+        if (profileData) {
+          setMyProfile(profileData);
+          
+          // 3. If they are IN a guild, fetch the rich dashboard data!
+          if (profileData.guild_name && profileData.guild_name !== 'UNASSIGNED') {
+            // Get the guild's stats
+            const { data: gDetails } = await supabase.from('guilds').eq('name', profileData.guild_name).single();
+            if (gDetails) setMyGuildDetails(gDetails);
+            
+            // Get the active roster (all users in this guild)
+            const { data: members } = await supabase.from('profiles')
+              .select('username, elo, wins')
+              .eq('guild_name', profileData.guild_name)
+              .order('elo', { ascending: false });
+            if (members) setMyGuildMembers(members);
+          }
+        }
+      }
+    } catch (err) {
+      console.error("Error fetching guild data:", err);
+    } finally {
+      setLoading(false);
+    }
   };
 
-  // Internal Guild Member Rankings
-  const houseMembers = [
-    { rank: 1, name: "GRACE_HOPPER", role: "GUILD MASTER", elo: "3,310", solved: "2,980", acc: "94%" },
-    { rank: 2, name: "0xALAN_TURING", role: "OFFICER", elo: "2,450", solved: "842", acc: "87%" },
-    { rank: 3, name: "CODE_NINJA", role: "MEMBER", elo: "2,100", solved: "420", acc: "81%" },
-    { rank: 4, name: "SYS_ADMIN", role: "MEMBER", elo: "1,950", solved: "310", acc: "79%" },
-  ];
+  useEffect(() => {
+    fetchData();
+  }, [user]);
 
-  // Global House Rankings
-  const globalHouses = [
-    { rank: 1, name: "NEWTONS_APPLES", level: 50, members: "150/150", winRate: "68%", elo: "58,900" },
-    { rank: 2, name: "SEGFAULT_KINGS", level: 48, members: "142/150", winRate: "64%", elo: "52,440" },
-    { rank: 3, name: "LOGIC_GATES", level: 42, members: "128/150", winRate: "59%", elo: "45,210" },
-    { rank: 4, name: "QUANTUM_CATS", level: 39, members: "110/150", winRate: "55%", elo: "41,100" },
-  ];
+  // --- ACTIONS ---
+  const handleJoinGuild = async (guildName) => {
+    if (!user) return alert("Please login to join an Academic House!");
+    const { error } = await supabase.from('profiles').update({ guild_name: guildName }).eq('id', user.id);
+    if (!error) {
+      const targetGuild = guilds.find(g => g.name === guildName);
+      if (targetGuild) {
+         await supabase.from('guilds').update({ member_count: targetGuild.member_count + 1, total_elo: targetGuild.total_elo + (myProfile?.elo || 1000) }).eq('name', guildName);
+      }
+      fetchData();
+    }
+  };
 
-  return (
-    <div className="page-wrap" style={{ maxWidth: '1400px' }}>
-      
-      {/* HEADER */}
-      <div className="page-header" style={{ marginBottom: '40px' }}>
-        <div className="page-header-left">
-          <div className="chip chip-p">🛡️ FACTION HUB</div>
-          <h1 style={{ color: 'var(--purple)', textShadow: '3px 3px 0 var(--pud)' }}>ACADEMIC HOUSES</h1>
-          <p>Coordinate with your faction, donate ELO, and climb the global leaderboards.</p>
-        </div>
-        <div className="page-header-right">
-          <button className="px-btn px-btn-p">⚔ DECLARE WAR</button>
-          <button className="px-btn px-btn-o">🔍 BROWSE HOUSES</button>
-        </div>
-      </div>
+  const handleLeaveGuild = async () => {
+    if (!user || !myProfile) return;
+    const oldGuildName = myProfile.guild_name;
+    const { error } = await supabase.from('profiles').update({ guild_name: 'UNASSIGNED' }).eq('id', user.id);
+    if (!error) {
+      const targetGuild = guilds.find(g => g.name === oldGuildName);
+      if (targetGuild && targetGuild.member_count > 0) {
+         await supabase.from('guilds').update({ member_count: targetGuild.member_count - 1, total_elo: targetGuild.total_elo - (myProfile.elo || 1000) }).eq('name', oldGuildName);
+      }
+      fetchData();
+    }
+  };
 
-      <div className="guild-layout">
+  const handleCreateGuild = async (e) => {
+    e.preventDefault();
+    if (!user) return alert("Please login to establish a House.");
+    if (!newGuildName.trim()) return;
+
+    const formattedName = newGuildName.toUpperCase().replace(/\s+/g, '_');
+    const { error: insertError } = await supabase.from('guilds').insert([{
+      name: formattedName,
+      description: newGuildDesc || 'A newly established academic house.',
+      total_elo: myProfile.elo || 1000,
+      member_count: 1
+    }]);
+
+    if (insertError) return alert("Error creating guild. That name might already exist!");
+    await supabase.from('profiles').update({ guild_name: formattedName }).eq('id', user.id);
+    setNewGuildName(''); setNewGuildDesc(''); fetchData();
+  };
+
+  if (loading) return <div style={{ color: 'var(--white)', padding: '100px', textAlign: 'center', fontFamily: '"Press Start 2P", monospace' }}>ACCESSING GUILD NETWORK...</div>;
+
+  const currentGuildName = myProfile?.guild_name || 'UNASSIGNED';
+
+  // ==========================================
+  // VIEW 1: USER IS IN A GUILD (RICH DASHBOARD)
+  // ==========================================
+  if (currentGuildName !== 'UNASSIGNED' && myGuildDetails) {
+    // Calculate dynamic Level and XP based on their total ELO
+    const level = Math.floor(myGuildDetails.total_elo / 5000) + 1;
+    const currentXp = myGuildDetails.total_elo % 5000;
+    const xpPercentage = (currentXp / 5000) * 100;
+
+    // Mock subject strengths (until we build a DB table for this)
+    const subjectStrengths = { "Physics": 1650, "Computer Science": 1400, "Mathematics": 1100 };
+
+    return (
+      <div className="max-w-6xl mx-auto p-8 pt-12 min-h-screen text-white">
         
-        {/* LEFT COLUMN: MY HOUSE STATS & WARS */}
-        <div className="g-col-left" style={{ flex: '0 0 400px' }}>
+        {/* TOP BANNER (GuildHeader logic) */}
+        <div className="bg-gray-900 border-4 border-pink-500 p-6 shadow-[8px_8px_0px_#831843] mb-8 relative">
+          <button onClick={handleLeaveGuild} className="absolute top-4 right-4 px-btn px-btn-r text-[10px]">LEAVE HOUSE</button>
           
-          <div className="g-panel g-my-guild">
-            <div className="g-panel-head">▶ YOUR FACTION</div>
-            <div className="mg-header">
-              <div className="mg-icon">⚡</div>
-              <div className="mg-info">
-                <div className="mg-name">{myHouse.name}</div>
-                <div className="mg-tags">
-                  <span className="ptag pt-y">LVL {myHouse.level}</span>
-                  <span className="ptag pt-b">{myHouse.members}</span>
-                </div>
+          <div className="flex justify-between items-start mb-4 pr-32">
+            <div>
+              <div className="font-pixel text-[10px] text-pink-400 mb-2">▶ ACADEMIC HOUSE</div>
+              <h1 className="font-pixel text-3xl text-white drop-shadow-[3px_3px_0_#000]">
+                {myGuildDetails.name}
+              </h1>
+              <p className="text-gray-400 mt-2 font-terminal text-xl">{myGuildDetails.description}</p>
+            </div>
+            <div className="text-center bg-black/50 border-2 border-gray-700 p-3">
+              <div className="font-pixel text-[10px] text-gray-400 mb-1">TOTAL HOUSE ELO</div>
+              <div className="font-pixel text-xl text-yellow-400">{myGuildDetails.total_elo}</div>
+            </div>
+          </div>
+
+          {/* Level & XP Bar */}
+          <div className="flex items-center gap-4">
+            <div className="font-pixel text-lg text-pink-400 bg-pink-500/20 px-4 py-2 border border-pink-500">
+              LVL {level}
+            </div>
+            <div className="flex-1">
+              <div className="flex justify-between font-pixel text-[10px] text-gray-400 mb-2">
+                <span>XP: {currentXp} / 5000</span>
+                <span>NEXT PERK: CUSTOM ARENA</span>
+              </div>
+              <div className="h-4 bg-black border-2 border-gray-700 w-full relative">
+                <div className="absolute top-0 left-0 h-full bg-pink-500 shadow-[inset_-3px_0_0_rgba(0,0,0,0.3)] transition-all duration-500" style={{ width: `${xpPercentage}%` }}></div>
               </div>
             </div>
-            
-            <div className="mg-stats" style={{ gridTemplateColumns: '1fr 1fr', padding: '16px' }}>
-              <div className="mg-stat-box">
-                <div className="ms-lbl">GLOBAL ELO</div>
-                <div className="ms-val" style={{ color: 'var(--yellow)', fontSize: '14px' }}>{myHouse.globalElo}</div>
-              </div>
-              <div className="mg-stat-box">
-                <div className="ms-lbl">WAR RECORD</div>
-                <div className="ms-val" style={{ color: 'var(--green)', fontSize: '14px' }}>{myHouse.warRecord}</div>
-              </div>
-            </div>
-            
-            <div style={{ padding: '16px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
-              <div className="ms-lbl" style={{ marginBottom: '16px' }}>FACTION DOMAIN MASTERY</div>
-              {myHouse.strengths.map(s => (
-                <div key={s.sub} style={{ marginBottom: '12px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', fontFamily: '"Press Start 2P", monospace', marginBottom: '6px' }}>
-                    <span style={{ color: 'var(--white)' }}>{s.sub}</span>
-                    <span style={{ color: 'var(--blue)' }}>{s.val}%</span>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+          {/* LEFT COLUMN: Strengths (GuildSkillDashboard logic) */}
+          <div className="bg-gray-900 border-2 border-blue-500 p-6 shadow-[4px_4px_0px_#1e3a8a]">
+            <h2 className="font-pixel text-blue-400 text-sm mb-6 border-b-2 border-gray-700 pb-2">
+              📊 DOMAIN STRENGTHS
+            </h2>
+            <div className="flex flex-col gap-6">
+              {Object.entries(subjectStrengths).map(([subjectName, rating]) => (
+                <div key={subjectName}>
+                  <div className="flex justify-between font-pixel text-[12px] mb-2">
+                    <span className="text-white uppercase">{subjectName}</span>
+                    <span className="text-blue-400">{rating} RATING</span>
                   </div>
-                  <div style={{ height: '8px', background: 'rgba(0,0,0,0.5)', border: '1px solid var(--border)' }}>
-                    <div style={{ height: '100%', width: `${s.val}%`, background: 'var(--blue)' }}></div>
+                  <div className="h-6 bg-black/50 border-2 border-gray-700 w-full relative p-1">
+                    <div className="h-full bg-blue-500" style={{ width: `${Math.min((rating / 2000) * 100, 100)}%` }}></div>
                   </div>
                 </div>
               ))}
             </div>
           </div>
 
-          {/* ACTIVE HOUSE WARS */}
-          <div className="g-panel g-wars">
-            <div className="g-panel-head" style={{ color: 'var(--pink)', borderBottomColor: 'rgba(255,60,172,.3)' }}>
-              ⚔ ACTIVE HOUSE WARS
-            </div>
-            <div className="gw-list">
-              <div className="gw-item active-war">
-                <div className="gw-badge blink">🔴 LIVE WAR</div>
-                <div className="gw-matchup" style={{ fontSize: '12px' }}>
-                  <span className="gw-t1">LOGIC_GATES</span> <br/><span className="gw-vs">VS</span><br/> <span className="gw-t2">NEWTONS_APPLES</span>
-                </div>
-                <div className="gw-meta" style={{ marginTop: '10px' }}>ALGORITHM BATTLES • ROUND 3</div>
-                <div style={{ display: 'flex', gap: '8px', marginTop: '16px' }}>
-                  <button className="px-btn px-btn-r" style={{ flex: 1, justifyContent: 'center', fontSize: '10px' }}>SPECTATE ▶</button>
-                  <button className="px-btn px-btn-g" style={{ flex: 1, justifyContent: 'center', fontSize: '10px' }}>JOIN FRAY</button>
-                </div>
-              </div>
+          {/* RIGHT COLUMN: Roster */}
+          <div className="bg-gray-900 border-2 border-yellow-500 p-6 shadow-[4px_4px_0px_#854d0e]">
+            <h2 className="font-pixel text-yellow-400 text-sm mb-6 border-b-2 border-gray-700 pb-2">
+              👥 ACTIVE ROSTER ({myGuildMembers.length}/50)
+            </h2>
+            <div className="flex flex-col gap-4 font-terminal text-2xl text-gray-300 h-[300px] overflow-y-auto pr-2">
+              {myGuildMembers.map((member, index) => {
+                // Highest ELO is deemed the "Leader"
+                const role = index === 0 ? 'Leader' : index < 3 ? 'Strategist' : 'Member';
+                const isMe = member.username === myProfile.username;
+                
+                return (
+                  <div key={index} className={`flex justify-between items-center bg-black/40 p-3 border ${isMe ? 'border-green-500' : 'border-gray-700'}`}>
+                    <div className="flex items-center gap-4">
+                      <span className="text-3xl">{role === 'Leader' ? '👑' : '👤'}</span>
+                      <div>
+                        <div className="text-white">{member.username || 'ANONYMOUS'} {isMe && '(YOU)'}</div>
+                        <div className="text-sm text-yellow-500 font-pixel text-[8px] mt-1">{role}</div>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-green-400 font-pixel text-[12px]">{member.elo} ELO</div>
+                      <div className="text-gray-500 font-pixel text-[8px] mt-1">{member.wins} WINS</div>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
         </div>
+      </div>
+    );
+  }
 
-        {/* RIGHT COLUMN: TABLES (Members & Global) */}
-        <div className="g-col-right" style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '24px' }}>
-          
-          {/* TABS */}
-          <div style={{ display: 'flex', gap: '12px', borderBottom: '2px solid var(--border)', paddingBottom: '12px' }}>
-            {['DASHBOARD', 'MEMBER ROSTER', 'GLOBAL STANDINGS'].map(tab => (
-              <button 
-                key={tab} 
-                onClick={() => setActiveTab(tab)}
-                className={`px-btn px-btn-o ${activeTab === tab ? 'active' : ''}`}
-                style={{ 
-                  background: activeTab === tab ? 'rgba(162,89,255,0.15)' : 'transparent', 
-                  color: activeTab === tab ? 'var(--purple)' : 'var(--muted)',
-                  borderColor: activeTab === tab ? 'var(--purple)' : 'var(--border)'
-                }}
-              >
-                {tab}
-              </button>
+  // ==========================================
+  // VIEW 2: USER IS NOT IN A GUILD (JOIN/CREATE)
+  // ==========================================
+  return (
+    <div className="page-wrap">
+      <div className="page-header" style={{ marginBottom: '32px' }}>
+        <div className="chip chip-p">🛡️ ACADEMIC HOUSES</div>
+        <h1 style={{ color: 'var(--purple)', textShadow: '3px 3px 0 var(--pud)', marginTop: '12px' }}>GUILD REGISTRY</h1>
+        <p style={{ color: 'var(--muted)', marginTop: '8px' }}>Pledge allegiance to a house, pool your ELO, and dominate the global leaderboards.</p>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '32px' }}>
+        
+        {/* GUILD LIST */}
+        <div style={{ flex: 2 }}>
+          <h2 style={{ fontFamily: '"Press Start 2P", monospace', fontSize: '14px', color: 'var(--yellow)', marginBottom: '16px' }}>ESTABLISHED HOUSES</h2>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            {guilds.map(guild => (
+              <div key={guild.id} style={{ background: 'rgba(0,0,0,0.4)', border: '2px solid var(--border)', padding: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <div style={{ fontFamily: '"Press Start 2P", monospace', fontSize: '12px', color: 'var(--white)' }}>{guild.name}</div>
+                  <div style={{ color: 'var(--muted)', fontSize: '14px', marginTop: '8px' }}>{guild.description}</div>
+                  <div style={{ marginTop: '12px', display: 'flex', gap: '16px', fontSize: '14px' }}>
+                    <span style={{ color: 'var(--yellow)' }}>🏆 {guild.total_elo} ELO</span>
+                    <span style={{ color: 'var(--blue)' }}>👥 {guild.member_count} MEMBERS</span>
+                  </div>
+                </div>
+                <button onClick={() => handleJoinGuild(guild.name)} className="px-btn px-btn-b">PLEDGE ▶</button>
+              </div>
             ))}
           </div>
-
-          {/* TABLE 1: MEMBER ROSTER */}
-          {(activeTab === 'DASHBOARD' || activeTab === 'MEMBER ROSTER') && (
-            <div className="table-section" style={{ borderColor: 'var(--purple)', margin: 0 }}>
-              <div className="table-header" style={{ color: 'var(--purple)' }}>
-                <span>👥 FACTION ROSTER (YOUR HOUSE)</span>
-                <span style={{ color: 'var(--muted)' }}>SORT: ELO</span>
-              </div>
-              <div style={{ overflowX: 'auto' }}>
-                <table className="rank-table">
-                  <thead>
-                    <tr>
-                      <th>RANK</th>
-                      <th>MEMBER NAME</th>
-                      <th>ROLE</th>
-                      <th>SOLVED</th>
-                      <th>ACCURACY</th>
-                      <th style={{ textAlign: 'right' }}>ELO CONTRIBUTION</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {houseMembers.map((m) => (
-                      <tr key={m.rank} className={m.name === "0xALAN_TURING" ? "is-me" : ""}>
-                        <td className={m.rank === 1 ? "t-rank gold" : "t-rank"}>#{m.rank}</td>
-                        <td className="t-name" style={{ fontSize: '12px' }}>{m.name} {m.name === "0xALAN_TURING" && "(YOU)"}</td>
-                        <td>
-                          <span className="t-lang" style={{ 
-                            background: m.role === 'GUILD MASTER' ? 'rgba(255,214,10,0.1)' : 'rgba(162,89,255,0.1)', 
-                            color: m.role === 'GUILD MASTER' ? 'var(--yellow)' : 'var(--purple)',
-                            borderColor: m.role === 'GUILD MASTER' ? 'var(--yellow)' : 'var(--purple)'
-                          }}>
-                            {m.role}
-                          </span>
-                        </td>
-                        <td className="t-val">{m.solved}</td>
-                        <td className="t-val t-green">{m.acc}</td>
-                        <td className="t-elo" style={{ color: 'var(--yellow)' }}>{m.elo}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {/* TABLE 2: GLOBAL STANDINGS */}
-          {(activeTab === 'DASHBOARD' || activeTab === 'GLOBAL STANDINGS') && (
-            <div className="table-section" style={{ borderColor: 'var(--border)', margin: 0 }}>
-              <div className="table-header">
-                <span>🏆 GLOBAL FACTION STANDINGS</span>
-                <span style={{ color: 'var(--green)' }}>SEASON 4</span>
-              </div>
-              <div style={{ overflowX: 'auto' }}>
-                <table className="rank-table">
-                  <thead>
-                    <tr>
-                      <th>RANK</th>
-                      <th>HOUSE NAME</th>
-                      <th>LEVEL</th>
-                      <th>MEMBERS</th>
-                      <th>WAR WIN %</th>
-                      <th style={{ textAlign: 'right' }}>TOTAL ELO</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {globalHouses.map((h) => (
-                      <tr key={h.rank} className={h.name === "LOGIC_GATES" ? "is-me" : ""}>
-                        <td className={h.rank === 1 ? "t-rank gold" : h.rank === 2 ? "t-rank silver" : h.rank === 3 ? "t-rank bronze" : "t-rank"}>#{h.rank}</td>
-                        <td className="t-name" style={{ fontSize: '13px', color: h.name === "LOGIC_GATES" ? 'var(--green)' : 'var(--white)' }}>{h.name}</td>
-                        <td className="t-val">{h.level}</td>
-                        <td className="t-val">{h.members}</td>
-                        <td className="t-val t-green">{h.winRate}</td>
-                        <td className="t-elo" style={{ color: 'var(--yellow)' }}>{h.elo}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
         </div>
+
+        {/* CREATE GUILD FORM */}
+        <div style={{ flex: 1 }}>
+          <h2 style={{ fontFamily: '"Press Start 2P", monospace', fontSize: '14px', color: 'var(--pink)', marginBottom: '16px' }}>FOUND A HOUSE</h2>
+          <form onSubmit={handleCreateGuild} style={{ background: 'var(--card)', border: '3px solid var(--pink)', padding: '20px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            <div>
+              <label style={{ display: 'block', color: 'var(--muted)', fontSize: '12px', fontFamily: '"Press Start 2P", monospace', marginBottom: '8px' }}>HOUSE NAME</label>
+              <input type="text" value={newGuildName} onChange={(e) => setNewGuildName(e.target.value)} maxLength={20} style={{ width: '100%', background: 'rgba(0,0,0,0.6)', border: '2px solid var(--border)', color: 'var(--white)', padding: '12px', fontFamily: '"VT323", monospace', fontSize: '20px', outline: 'none' }} placeholder="e.g. QUANTUM_GHOSTS" />
+            </div>
+            <div>
+              <label style={{ display: 'block', color: 'var(--muted)', fontSize: '12px', fontFamily: '"Press Start 2P", monospace', marginBottom: '8px' }}>MANIFESTO (DESC)</label>
+              <textarea value={newGuildDesc} onChange={(e) => setNewGuildDesc(e.target.value)} maxLength={60} style={{ width: '100%', background: 'rgba(0,0,0,0.6)', border: '2px solid var(--border)', color: 'var(--white)', padding: '12px', fontFamily: '"VT323", monospace', fontSize: '20px', outline: 'none', resize: 'none', height: '80px' }} placeholder="Declare your house's purpose..." />
+            </div>
+            <button type="submit" className="px-btn px-btn-r" style={{ justifyContent: 'center' }} disabled={!newGuildName}>
+              INITIALIZE PROTOCOL
+            </button>
+          </form>
+        </div>
+
       </div>
     </div>
   );
