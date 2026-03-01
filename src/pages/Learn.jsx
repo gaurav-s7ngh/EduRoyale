@@ -1,67 +1,55 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { supabase } from '../lib/supabaseClient';
 import { useAuth } from '../context/AuthContext';
 import '../styles/learn.css';
 import { MASCOT, MASCOT_ALT } from '../mascot';
 
+// --- HARDCODED MODULE DATA ---
+export const HARDCODED_MODULES = [
+  { id: 'bs-magic', title: 'Binary Search Magic', description: 'Find elements in O(log n) time by halving the search space.', subject: 'dsa', difficulty: 'Intermediate', xp_reward: 200, is_locked: false },
+  { id: 'bubble-sort', title: 'Bubble Sort: The Heavy Drop', description: 'Learn how elements bubble up to their correct positions through continuous swapping.', subject: 'dsa', difficulty: 'Beginner', xp_reward: 150, is_locked: false },
+  { id: 'stacks-lifo', title: 'Stacks: The LIFO Cylinder', description: 'Master the Last-In-First-Out concept. Push to add, Pop to remove.', subject: 'dsa', difficulty: 'Beginner', xp_reward: 100, is_locked: false },
+  { id: 'projectile-motion', title: 'Projectile Motion: The Cannon', description: 'Master the kinematics of 2D motion. Adjust the angle and fire!', subject: 'ph11', difficulty: 'Beginner', xp_reward: 150, is_locked: false },
+  { id: 'titration-chem', title: 'Titration: The Color Shift', description: 'Drop by drop, find the exact equivalence point where acid neutralizes base.', subject: 'ch11', difficulty: 'Intermediate', xp_reward: 200, is_locked: false }
+];
+
 export default function Learn() {
   const { user } = useAuth();
   const navigate = useNavigate();
-  const { subjectId } = useParams(); // Catches the 'dsa' from /learn/dsa
+  const { subjectId } = useParams(); // Catches 'dsa', 'ph11', etc.
   
-  const [modules, setModules] = useState([]);
-  const [loading, setLoading] = useState(true);
   const [activeSubject, setActiveSubject] = useState('All');
 
+  // Automatically switch tab if arriving via SubjectSelection URL (e.g. /learn/ph11)
   useEffect(() => {
-    async function fetchModules() {
-      try {
-        // Fetch all learning modules from Supabase
-        const { data, error } = await supabase
-          .from('modules')
-          .select('*')
-          .order('created_at', { ascending: true });
-
-        if (error) throw error;
-        if (data) setModules(data);
-      } catch (error) {
-        console.error("Error fetching modules:", error.message);
-      } finally {
-        setLoading(false);
-      }
+    if (subjectId) {
+      setActiveSubject(subjectId);
     }
-
-    fetchModules();
-  }, []);
+  }, [subjectId]);
 
   // Filter modules based on the selected subject tab
   const filteredModules = activeSubject === 'All' 
-    ? modules 
-    : modules.filter(m => m.subject === activeSubject);
+    ? HARDCODED_MODULES 
+    : HARDCODED_MODULES.filter(m => m.subject === activeSubject);
 
   // Get unique subjects for the tabs
-  const subjects = ['All', ...new Set(modules.map(m => m.subject))];
+  const subjects = ['All', ...new Set(HARDCODED_MODULES.map(m => m.subject))];
 
   const handleStartModule = (moduleId) => {
     if (!user) {
       alert("Please login to start a module and earn XP!");
       return;
     }
-    // Here you would route them to the actual lesson page
-    // e.g., navigate(`/learn/${moduleId}`)
-    console.log(`Starting module: ${moduleId}`);
-    alert("Module started! (Add routing here later)");
+    // Route to the lesson page
+    navigate(`/lesson/${moduleId}`);
   };
-
-  if (loading) return <div style={{ color: 'var(--white)', padding: '100px', textAlign: 'center', fontFamily: '"Press Start 2P", monospace' }}>LOADING DATABANKS...</div>;
 
   return (
     <div className="page-wrap">
       
       {/* 3D NAV BACK BUTTON */}
       <button 
-        onClick={() => navigate('/learn')} 
+        onClick={() => navigate('/subject-selection')} 
         className="px-btn px-btn-o" 
         style={{ marginBottom: '24px', fontSize: '10px' }}
       >
